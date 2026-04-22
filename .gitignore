@@ -33,9 +33,6 @@ Thumbs.db
 !/backend/data/tmp/image/
 !/backend/data/tmp/image/.gitkeep
 
-# Reverse-engineering captures
-/example/*.har
-
 # Frontend dependencies/build
 /web/node_modules/
 /web/.next/

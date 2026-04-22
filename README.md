@@ -5,7 +5,6 @@ ChatGpt Image Studio 是一个单仓库交付的图片工作流项目：
 - `backend/`：Go 后端，负责 API 与静态资源托管
 - `web/`：Next.js 前端，构建后静态导出到 `web/out`
 - `scripts/`：统一的构建、开发、检查脚本
-- `example/`：脱敏后的逆向分析资料
 
 项目的交付方式是“一个服务统一承载前后端”：前端构建产物输出到 `web/out`，后端直接托管它，不需要把前端和后端拆成两个独立产品部署。
 
@@ -30,8 +29,6 @@ ChatGpt Image Studio 是一个单仓库交付的图片工作流项目：
 │   ├── config.defaults.toml  默认配置
 │   └── main.go
 ├── web/                      Next.js 前端
-├── assets/                   文档图片资源
-├── example/                  脱敏后的逆向分析资料
 ├── scripts/                  build / dev / check 脚本
 ├── Dockerfile
 ├── docker-compose.yml
@@ -197,10 +194,9 @@ docker compose up --build
 - `backend/data/auths/*.json`
 - `backend/data/sync_state/*.json`
 - `backend/data/tmp/`
-- `example/*.har`
 - 构建产物、日志、临时文件、本地二进制
 
-不要提交认证文件、管理密钥、HAR 抓包、运行状态或日志中的敏感内容。
+不要提交认证文件、管理密钥、运行状态或日志中的敏感内容。
 
 ## 认证文件导入规则
 

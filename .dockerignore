@@ -7,8 +7,6 @@
 Thumbs.db
 
 dist
-assets
-example
 logs
 
 backend/*.exe
