@@ -284,13 +284,3 @@ func buildChatPromptAndImages(body createChatMessageRequest) (string, [][]byte, 
 	}
 	return prompt, images, nil
 }
-
-func nonEmptyStrings(values []string) []string {
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			result = append(result, strings.TrimSpace(value))
-		}
-	}
-	return result
-}
