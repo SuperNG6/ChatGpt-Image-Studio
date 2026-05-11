@@ -2,10 +2,11 @@
 
 import { useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type ReactNode, type RefObject } from "react";
 import Zoom from "react-medium-image-zoom";
-import { ArrowUp, Brush, ChevronDown, CircleHelp, ImagePlus, Trash2 } from "lucide-react";
+import { ArrowUp, Brush, ChevronDown, CircleHelp, ImagePlus, Library, Save, Trash2 } from "lucide-react";
 
 import { AppImage as Image } from "@/components/app-image";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -17,6 +18,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import type { ImageQuality } from "@/lib/api";
 import type { ImageMode, StoredSourceImage } from "@/store/image-conversations";
+import type { PromptTemplate } from "@/store/prompt-templates";
 import { cn } from "@/lib/utils";
 import { buildSourceImageUrl } from "../view-utils";
 
@@ -35,8 +37,11 @@ type PromptComposerProps = {
   imageQualityDisabled: boolean;
   imageQualityDisabledReason: string;
   availableQuota: string;
+  contextualPromptEnabled: boolean;
+  contextualPromptAvailable: boolean;
   sourceImages: StoredSourceImage[];
   imagePrompt: string;
+  promptTemplates: PromptTemplate[];
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   uploadInputRef: RefObject<HTMLInputElement | null>;
   maskInputRef: RefObject<HTMLInputElement | null>;
@@ -45,7 +50,11 @@ type PromptComposerProps = {
   onImageAspectRatioChange: (value: string) => void;
   onImageResolutionTierChange: (value: string) => void;
   onImageQualityChange: (value: string) => void;
+  onContextualPromptEnabledChange: (value: boolean) => void;
   onPromptChange: (value: string) => void;
+  onApplyPromptTemplate: (template: PromptTemplate) => void;
+  onSavePromptTemplate: () => Promise<void>;
+  onDeletePromptTemplate: (id: string) => Promise<void>;
   onPromptPaste: (event: ReactClipboardEvent<HTMLTextAreaElement>) => void;
   onRemoveSourceImage: (id: string) => void;
   onOpenSourceSelectionEditor: (sourceImageId: string) => void;
@@ -69,8 +78,11 @@ export function PromptComposer({
   imageQualityDisabled,
   imageQualityDisabledReason,
   availableQuota,
+  contextualPromptEnabled,
+  contextualPromptAvailable,
   sourceImages,
   imagePrompt,
+  promptTemplates,
   textareaRef,
   uploadInputRef,
   maskInputRef,
@@ -79,7 +91,11 @@ export function PromptComposer({
   onImageAspectRatioChange,
   onImageResolutionTierChange,
   onImageQualityChange,
+  onContextualPromptEnabledChange,
   onPromptChange,
+  onApplyPromptTemplate,
+  onSavePromptTemplate,
+  onDeletePromptTemplate,
   onPromptPaste,
   onRemoveSourceImage,
   onOpenSourceSelectionEditor,
@@ -94,6 +110,7 @@ export function PromptComposer({
   const hasComposerContent = imagePrompt.trim().length > 0 || sourceImages.length > 0;
   const previousHasComposerContentRef = useRef(hasComposerContent);
   const [isMobileComposerExpanded, setIsMobileComposerExpanded] = useState(hasComposerContent);
+  const [showTemplateLibrary, setShowTemplateLibrary] = useState(false);
   const isMobileComposerCollapsed = !isMobileComposerExpanded;
   const showMobileExpandedSections = !isMobileComposerCollapsed;
 
@@ -409,6 +426,57 @@ export function PromptComposer({
                   {mode === "generate" ? "上传参考图" : "上传源图"}
                 </Button>
 
+                <label
+                  className={cn(
+                    "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full border border-stone-200 bg-white px-2 text-[11px] font-medium text-stone-700 transition sm:h-8 sm:px-2.5 sm:text-xs",
+                    !contextualPromptAvailable &&
+                      "cursor-not-allowed bg-stone-50 text-stone-400",
+                  )}
+                  title={
+                    contextualPromptAvailable
+                      ? "提交时参考当前会话最近几轮提示词"
+                      : "当前会话还没有可参考的历史提示词"
+                  }
+                >
+                  <Checkbox
+                    checked={contextualPromptEnabled && contextualPromptAvailable}
+                    disabled={!contextualPromptAvailable}
+                    onCheckedChange={(value) =>
+                      onContextualPromptEnabledChange(Boolean(value))
+                    }
+                    className="size-3.5 rounded-[4px] border-stone-300 data-[state=checked]:border-stone-950 data-[state=checked]:bg-stone-950 data-[state=checked]:text-white"
+                    onClick={(event) => event.stopPropagation()}
+                  />
+                  携带上下文
+                </label>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 rounded-full border-stone-200 bg-white px-2 text-[11px] font-medium text-stone-700 shadow-none sm:h-8 sm:px-2.5 sm:text-xs"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setShowTemplateLibrary((current) => !current);
+                  }}
+                >
+                  <Library className="size-3.5" />
+                  模板
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 rounded-full border-stone-200 bg-white px-2 text-[11px] font-medium text-stone-700 shadow-none sm:h-8 sm:px-2.5 sm:text-xs"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void onSavePromptTemplate();
+                  }}
+                  disabled={!imagePrompt.trim()}
+                  title="保存当前提示词为模板"
+                >
+                  <Save className="size-3.5" />
+                  存模板
+                </Button>
               </div>
 
               <button
@@ -421,6 +489,63 @@ export function PromptComposer({
               </button>
             </div>
           </div>
+
+          {showTemplateLibrary ? (
+            <div
+              className="border-t border-stone-200 px-3 py-3 sm:px-4"
+              onClick={(event) => event.stopPropagation()}
+            >
+              {promptTemplates.length === 0 ? (
+                <div className="rounded-2xl bg-white px-4 py-3 text-sm text-stone-500">
+                  还没有提示词模板。写好提示词后点击“存模板”。
+                </div>
+              ) : (
+                <div className="hide-scrollbar flex gap-2 overflow-x-auto">
+                  {promptTemplates.map((template) => (
+                    <div
+                      key={template.id}
+                      className="w-[260px] shrink-0 rounded-2xl border border-stone-200 bg-white p-3"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <button
+                          type="button"
+                          className="min-w-0 flex-1 text-left"
+                          onClick={() => {
+                            onApplyPromptTemplate(template);
+                            setShowTemplateLibrary(false);
+                          }}
+                        >
+                          <div className="truncate text-sm font-semibold text-stone-800">
+                            {template.title}
+                          </div>
+                          <div className="mt-1 line-clamp-3 text-xs leading-5 text-stone-500">
+                            {template.prompt}
+                          </div>
+                        </button>
+                        <button
+                          type="button"
+                          className="inline-flex size-8 shrink-0 items-center justify-center rounded-xl text-stone-400 transition hover:bg-stone-100 hover:text-rose-500"
+                          onClick={() => void onDeletePromptTemplate(template.id)}
+                          aria-label="删除模板"
+                        >
+                          <Trash2 className="size-4" />
+                        </button>
+                      </div>
+                      {template.variables.length > 0 ? (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {template.variables.slice(0, 4).map((variable) => (
+                            <span key={variable} className="rounded-full bg-stone-100 px-2 py-0.5 text-[10px] text-stone-500">
+                              {variable}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : null}
 
           <input
             ref={uploadInputRef}

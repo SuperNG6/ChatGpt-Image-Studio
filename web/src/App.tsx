@@ -1,6 +1,8 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 
 import AccountsPage from "@/app/accounts/page";
+import ChatPage from "@/app/chat/page";
+import FlowPage from "@/app/flow/page";
 import ImagePage from "@/app/image/page";
 import AppShell from "@/app/layout";
 import LoginPage from "@/app/login/page";
@@ -18,6 +20,8 @@ export default function App() {
         <Route path="/image" element={<Navigate to="/image/history" replace />} />
         <Route path="/image/history" element={<ImagePage />} />
         <Route path="/image/workspace" element={<ImagePage />} />
+        <Route path="/chat" element={<ChatPage />} />
+        <Route path="/flow" element={<FlowPage />} />
         <Route path="/accounts" element={<AccountsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/startup-check" element={<StartupCheckPage />} />

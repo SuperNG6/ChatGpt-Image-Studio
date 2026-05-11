@@ -10,6 +10,7 @@ import { buildImageDataUrl, buildSourceImageUrl } from "../view-utils";
 
 export type EditorTarget = {
   conversationId: string | null;
+  turnId?: string;
   image: StoredImage | null;
   imageName: string;
   sourceDataUrl: string;
@@ -137,6 +138,7 @@ export function useImageSourceInputs({
     }
     setEditorTarget({
       conversationId,
+      turnId: _turnId,
       image,
       imageName,
       sourceDataUrl: dataUrl,

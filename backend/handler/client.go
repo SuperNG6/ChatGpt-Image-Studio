@@ -66,6 +66,12 @@ type ImageResult struct {
 	RevisedPrompt  string `json:"revised_prompt"`
 }
 
+type ChatResult struct {
+	Content         string `json:"content"`
+	ConversationID  string `json:"conversation_id"`
+	ParentMessageID string `json:"parent_message_id"`
+}
+
 type ChatGPTClient struct {
 	accessToken    string
 	cookies        string
@@ -76,6 +82,39 @@ type ChatGPTClient struct {
 	pollInterval   time.Duration
 	pollMaxWait    time.Duration
 	lastImageRoute string
+}
+
+func (c *ChatGPTClient) SendMessage(ctx context.Context, prompt, model, conversationID, parentMessageID string, images [][]byte) (*ChatResult, error) {
+	if strings.TrimSpace(prompt) == "" && len(images) == 0 {
+		return nil, fmt.Errorf("message is required")
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = defaultUpstreamModel
+	}
+
+	var body map[string]any
+	if len(images) > 0 {
+		uploads := make([]*UploadedFile, 0, len(images))
+		for index, image := range images {
+			uploaded, err := c.UploadFile(ctx, image, fmt.Sprintf("chat_image_%d.png", index+1), detectMIME(image))
+			if err != nil {
+				return nil, fmt.Errorf("upload image %d: %w", index+1, err)
+			}
+			uploads = append(uploads, uploaded)
+		}
+		body = c.buildMultimodalBody(prompt, model, uploads, nil)
+		if strings.TrimSpace(parentMessageID) != "" {
+			body["parent_message_id"] = strings.TrimSpace(parentMessageID)
+		}
+		if strings.TrimSpace(conversationID) != "" {
+			body["conversation_id"] = strings.TrimSpace(conversationID)
+		}
+	} else {
+		body = c.buildConversationBody(prompt, model, conversationID, parentMessageID, nil)
+	}
+
+	return c.doTextConversation(ctx, body)
 }
 
 func NewChatGPTClient(accessToken, cookies string) *ChatGPTClient {
@@ -717,6 +756,41 @@ func (c *ChatGPTClient) doFConversation(ctx context.Context, body map[string]any
 	return c.doConversationRequest(ctx, body, "/f/conversation", "f conversation")
 }
 
+func (c *ChatGPTClient) doTextConversation(ctx context.Context, body map[string]any) (*ChatResult, error) {
+	requestContext := extractConversationRequestContext(body)
+
+	chatToken, proofToken, err := c.getSentinelTokens(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("sentinel tokens: %w", err)
+	}
+
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal body: %w", err)
+	}
+
+	req, _ := http.NewRequestWithContext(ctx, "POST", baseURL+"/conversation", bytes.NewReader(jsonBody))
+	c.setHeaders(req)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("openai-sentinel-chat-requirements-token", chatToken)
+	if proofToken != "" {
+		req.Header.Set("openai-sentinel-proof-token", proofToken)
+	}
+
+	resp, err := c.streamClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("conversation request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return nil, fmt.Errorf("conversation returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return c.parseTextSSE(ctx, resp.Body, requestContext)
+}
+
 func (c *ChatGPTClient) doConversationRequest(ctx context.Context, body map[string]any, path, routeLabel string) ([]ImageResult, error) {
 	requestContext := extractConversationRequestContext(body)
 
@@ -751,6 +825,73 @@ func (c *ChatGPTClient) doConversationRequest(ctx context.Context, body map[stri
 	}
 
 	return c.parseSSE(ctx, resp.Body, requestContext)
+}
+
+func (c *ChatGPTClient) parseTextSSE(ctx context.Context, reader io.Reader, requestContext conversationRequestContext) (*ChatResult, error) {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
+
+	result := &ChatResult{
+		ConversationID: strings.TrimSpace(requestContext.ConversationID),
+	}
+	var fallback string
+	var fallbackMessageID string
+
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+		if !strings.HasPrefix(data, "{") {
+			continue
+		}
+
+		var event sseEvent
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			continue
+		}
+		if strings.TrimSpace(event.ConversationID) != "" {
+			result.ConversationID = strings.TrimSpace(event.ConversationID)
+		}
+		if event.Message == nil {
+			continue
+		}
+		msg := event.Message
+		if msg.ID == requestContext.SubmittedMessageID || msg.Author.Role != "assistant" {
+			continue
+		}
+		text := extractMessageText(msg)
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		fallback = text
+		fallbackMessageID = msg.ID
+		if msg.Status == "finished_successfully" {
+			result.Content = text
+			result.ParentMessageID = msg.ID
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("SSE read error: %w", err)
+	}
+	if strings.TrimSpace(result.Content) == "" {
+		result.Content = fallback
+		result.ParentMessageID = fallbackMessageID
+	}
+	if strings.TrimSpace(result.Content) == "" {
+		return nil, fmt.Errorf("empty assistant response")
+	}
+	return result, nil
 }
 
 // getSentinelTokens fetches the chat-requirements token and solves PoW if needed.
@@ -1201,4 +1342,32 @@ type sseImagePart struct {
 			Prompt string `json:"prompt"`
 		} `json:"dalle"`
 	} `json:"metadata"`
+}
+
+func extractMessageText(msg *sseMessage) string {
+	if msg == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(msg.Content.Parts))
+	for _, raw := range msg.Content.Parts {
+		var text string
+		if err := json.Unmarshal(raw, &text); err == nil {
+			if strings.TrimSpace(text) != "" {
+				parts = append(parts, text)
+			}
+			continue
+		}
+
+		var object map[string]any
+		if err := json.Unmarshal(raw, &object); err != nil {
+			continue
+		}
+		for _, key := range []string{"text", "content"} {
+			if value := strings.TrimSpace(stringValue(object[key])); value != "" {
+				parts = append(parts, value)
+				break
+			}
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
 }

@@ -2,11 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "react-medium-image-zoom/dist/styles.css";
-import { ChevronsDown } from "lucide-react";
+import { ChevronsDown, GitBranch, Star, X } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
 import { ImageEditModal } from "@/components/image-edit-modal";
+import { AppImage as Image } from "@/components/app-image";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   cancelImageTask,
   consumeImageTaskStream,
@@ -29,6 +32,17 @@ import {
   type ImageMode,
   type StoredImage,
 } from "@/store/image-conversations";
+import {
+  deletePromptTemplate,
+  listPromptTemplates,
+  savePromptTemplate,
+  type PromptTemplate,
+} from "@/store/prompt-templates";
+import {
+  listChatConversations,
+  saveChatConversation,
+  type ChatConversation,
+} from "@/store/chat-conversations";
 import { ConversationTurns } from "./components/conversation-turns";
 import { EmptyState } from "./components/empty-state";
 import { HistorySidebar } from "./components/history-sidebar";
@@ -45,7 +59,7 @@ import { WorkspaceHeader } from "./components/workspace-header";
 import { useImageHistory } from "./hooks/use-image-history";
 import { useImageSourceInputs } from "./hooks/use-image-source-inputs";
 import { useImageSubmit } from "./hooks/use-image-submit";
-import { buildConversationPreviewSource } from "./view-utils";
+import { buildConversationPreviewSource, buildImageDataUrl } from "./view-utils";
 
 type ImageAspectRatio = "auto" | "1:1" | "4:3" | "3:2" | "16:9" | "21:9" | "9:16";
 type ImageResolutionTier = "auto-free" | "auto-paid" | "sd" | "2k" | "4k";
@@ -146,6 +160,21 @@ const imageQualityOptions: Array<{
   },
 ];
 
+const CONTEXTUAL_PROMPT_STORAGE_KEY =
+  "chatgpt2api:image-contextual-prompt-enabled";
+
+function readContextualPromptPreference() {
+  if (typeof window === "undefined") {
+    return true;
+  }
+  try {
+    const raw = window.localStorage.getItem(CONTEXTUAL_PROMPT_STORAGE_KEY);
+    return raw === null ? true : raw === "1";
+  } catch {
+    return true;
+  }
+}
+
 const modeLabelMap: Record<ImageMode, string> = {
   generate: "生成",
   edit: "编辑",
@@ -224,6 +253,83 @@ function formatAvailableQuota(accounts: Account[], allowDisabled: boolean) {
       0,
     ),
   );
+}
+
+function normalizeTagInput(value: string) {
+  return Array.from(
+    new Set(
+      value
+        .split(/[,，#\s]+/g)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  ).slice(0, 24);
+}
+
+function conversationMatchesStatus(
+  conversation: ImageConversation,
+  statusFilter: "all" | "success" | "error" | "running",
+) {
+  if (statusFilter === "all") {
+    return true;
+  }
+  const statuses = (conversation.turns ?? []).map((turn) => turn.status);
+  if (statusFilter === "running") {
+    return statuses.some((status) =>
+      ["queued", "running", "generating"].includes(status),
+    );
+  }
+  return statuses.some((status) => status === statusFilter);
+}
+
+function conversationSearchText(conversation: ImageConversation) {
+  return [
+    conversation.title,
+    conversation.prompt,
+    conversation.mode,
+    conversation.size,
+    conversation.quality,
+    ...(conversation.tags ?? []),
+    ...(conversation.turns ?? []).flatMap((turn) => [
+      turn.title,
+      turn.prompt,
+      turn.size,
+      turn.quality,
+      ...(turn.tags ?? []),
+      ...turn.images.map((image) => image.revised_prompt || ""),
+    ]),
+  ]
+    .join(" ")
+    .toLowerCase();
+}
+
+function downloadJSON(filename: string, payload: unknown) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+async function imageSourceToDataUrl(src: string) {
+  if (src.startsWith("data:")) {
+    return src;
+  }
+  const response = await fetch(src.startsWith("/") ? src : src);
+  if (!response.ok) {
+    throw new Error(`读取图片失败 (${response.status})`);
+  }
+  const blob = await response.blob();
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("读取图片失败"));
+    reader.readAsDataURL(blob);
+  });
 }
 
 function getImageRemaining(account: Account) {
@@ -320,7 +426,10 @@ function mapTaskStatusToTurnStatus(status: string): ImageConversationStatus {
   }
 }
 
-function mapTaskImagesToStoredImages(images: ImageTaskView["images"]): StoredImage[] {
+function mapTaskImagesToStoredImages(
+  images: ImageTaskView["images"],
+  parent?: { parentTurnId?: string; parentImageId?: string },
+): StoredImage[] {
   return images.map((image, index) => ({
     id: image.file_id || image.gen_id || `task-image-${index}`,
     status:
@@ -338,6 +447,8 @@ function mapTaskImagesToStoredImages(images: ImageTaskView["images"]): StoredIma
     parent_message_id: image.parent_message_id,
     source_account_id: image.source_account_id,
     error: image.error,
+    parentTurnId: parent?.parentTurnId,
+    parentImageId: parent?.parentImageId,
   }));
 }
 
@@ -433,7 +544,12 @@ function applyTaskViewToConversation(
       return turn;
     }
     const mappedTaskImages =
-      task.images.length > 0 ? mapTaskImagesToStoredImages(task.images) : [];
+      task.images.length > 0
+        ? mapTaskImagesToStoredImages(task.images, {
+            parentTurnId: turn.parentTurnId,
+            parentImageId: turn.parentImageId,
+          })
+        : [];
     const mergedImages =
       typeof task.retryImageIndex === "number"
         ? mergeRetryImageResult(turn.images, mappedTaskImages, task.retryImageIndex)
@@ -525,7 +641,8 @@ function buildProcessingStatus(
 }
 
 export default function ImagePage() {
-  const { pathname } = useLocation();
+  const location = useLocation();
+  const { pathname } = location;
   const navigate = useNavigate();
   const didLoadQuotaRef = useRef(false);
   const mountedRef = useRef(true);
@@ -566,11 +683,26 @@ export default function ImagePage() {
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [isMobileComposerCollapsed, setIsMobileComposerCollapsed] =
     useState(true);
+  const [contextualPromptEnabled, setContextualPromptEnabled] = useState(
+    readContextualPromptPreference,
+  );
   const [taskItems, setTaskItems] = useState<ImageTaskView[]>([]);
   const [cancellingTaskIds, setCancellingTaskIds] = useState<string[]>([]);
   const [taskSnapshot, setTaskSnapshot] = useState<ImageTaskSnapshot>(
     buildEmptyTaskSnapshot(),
   );
+  const [historySearchQuery, setHistorySearchQuery] = useState("");
+  const [historyModeFilter, setHistoryModeFilter] = useState<"all" | ImageMode>("all");
+  const [historyStatusFilter, setHistoryStatusFilter] = useState<"all" | "success" | "error" | "running">("all");
+  const [historyFavoriteOnly, setHistoryFavoriteOnly] = useState(false);
+  const [selectedHistoryIds, setSelectedHistoryIds] = useState<Set<string>>(new Set());
+  const [tagDraft, setTagDraft] = useState("");
+  const [compareItems, setCompareItems] = useState<Array<{
+    conversationId: string;
+    turnId: string;
+    image: StoredImage;
+  }>>([]);
+  const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([]);
   const persistedTaskStatesRef = useRef<Record<string, string>>({});
   const cancellingTaskIdsRef = useRef(new Set<string>());
 
@@ -676,6 +808,30 @@ export default function ImagePage() {
       applyTaskViewToConversation(conversation, tasksByTurnKey),
     );
   }, [conversations, taskItems]);
+  const filteredConversations = useMemo(() => {
+    const query = historySearchQuery.trim().toLowerCase();
+    return displayedConversations.filter((conversation) => {
+      if (historyModeFilter !== "all" && conversation.mode !== historyModeFilter) {
+        return false;
+      }
+      if (!conversationMatchesStatus(conversation, historyStatusFilter)) {
+        return false;
+      }
+      if (historyFavoriteOnly && !conversation.favorite && !(conversation.turns ?? []).some((turn) => turn.favorite || turn.images.some((image) => image.favorite))) {
+        return false;
+      }
+      if (query && !conversationSearchText(conversation).includes(query)) {
+        return false;
+      }
+      return true;
+    });
+  }, [
+    displayedConversations,
+    historyFavoriteOnly,
+    historyModeFilter,
+    historySearchQuery,
+    historyStatusFilter,
+  ]);
   const selectedConversation = useMemo(
     () =>
       displayedConversations.find((item) => item.id === selectedConversationId) ??
@@ -693,6 +849,9 @@ export default function ImagePage() {
   const selectedConversationTurns = useMemo(
     () => selectedConversation?.turns ?? [],
     [selectedConversation],
+  );
+  const contextualPromptAvailable = selectedConversationTurns.some((turn) =>
+    turn.prompt?.trim(),
   );
   const selectedConversationLastTurn = useMemo(
     () =>
@@ -888,6 +1047,10 @@ export default function ImagePage() {
     () => buildWaitingDots(submitElapsedSeconds),
     [submitElapsedSeconds],
   );
+  const compareImageIds = useMemo(
+    () => new Set(compareItems.map((item) => item.image.id)),
+    [compareItems],
+  );
 
   useEffect(() => {
     mountedRef.current = true;
@@ -923,6 +1086,26 @@ export default function ImagePage() {
       window.cancelAnimationFrame(frame);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadTemplates = async () => {
+      try {
+        const items = await listPromptTemplates();
+        if (!cancelled) {
+          setPromptTemplates(items);
+        }
+      } catch {
+        if (!cancelled) {
+          setPromptTemplates([]);
+        }
+      }
+    };
+    void loadTemplates();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -1249,6 +1432,20 @@ export default function ImagePage() {
     );
   }, [selectedConversation?.title]);
 
+  useEffect(() => {
+    const queryConversationId = new URLSearchParams(location.search).get("conversation");
+    if (
+      queryConversationId &&
+      displayedConversations.some((item) => item.id === queryConversationId)
+    ) {
+      focusConversation(queryConversationId);
+    }
+  }, [displayedConversations, focusConversation, location.search]);
+
+  useEffect(() => {
+    setTagDraft((selectedConversation?.tags ?? []).join(", "));
+  }, [selectedConversation?.id, selectedConversation?.tags]);
+
   const persistConversation = useCallback(
     async (conversation: ImageConversation) => {
       const normalizedConversation = normalizeConversation(conversation);
@@ -1345,13 +1542,234 @@ export default function ImagePage() {
   }, [displayedConversations, taskItems, updateConversation]);
 
   const resetComposer = useCallback(
-    (nextMode: ImageMode = mode) => {
+    (nextMode: ImageMode = mode, options?: { resetCount?: boolean }) => {
       setMode(nextMode);
       setImagePrompt("");
-      setImageCount("1");
+      if (options?.resetCount) {
+        setImageCount("1");
+      }
       setSourceImages([]);
     },
     [mode, setSourceImages],
+  );
+
+  const toggleHistorySelected = useCallback((id: string, value: boolean) => {
+    setSelectedHistoryIds((current) => {
+      const next = new Set(current);
+      if (value) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      return next;
+    });
+  }, []);
+
+  const exportSelectedConversations = useCallback(() => {
+    const selectedItems =
+      selectedHistoryIds.size > 0
+        ? displayedConversations.filter((item) => selectedHistoryIds.has(item.id))
+        : filteredConversations;
+    if (selectedItems.length === 0) {
+      toast.warning("没有可导出的历史记录");
+      return;
+    }
+    downloadJSON(`image-history-export-${new Date().toISOString().slice(0, 10)}.json`, {
+      exportedAt: new Date().toISOString(),
+      count: selectedItems.length,
+      items: selectedItems,
+    });
+    toast.success(`已导出 ${selectedItems.length} 条历史记录`);
+  }, [displayedConversations, filteredConversations, selectedHistoryIds]);
+
+  const toggleConversationFavorite = useCallback(
+    async (conversationId: string) => {
+      await updateConversation(conversationId, (current) => {
+        const base = current ?? displayedConversations.find((item) => item.id === conversationId);
+        if (!base) {
+          throw new Error("会话不存在");
+        }
+        return {
+          ...base,
+          favorite: !base.favorite,
+          turns: (base.turns ?? []).map((turn, index, items) =>
+            index === items.length - 1
+              ? { ...turn, favorite: !base.favorite }
+              : turn,
+          ),
+        };
+      });
+    },
+    [displayedConversations, updateConversation],
+  );
+
+  const updateConversationTags = useCallback(
+    async (conversationId: string, tags: string[]) => {
+      await updateConversation(conversationId, (current) => {
+        const base = current ?? displayedConversations.find((item) => item.id === conversationId);
+        if (!base) {
+          throw new Error("会话不存在");
+        }
+        return {
+          ...base,
+          tags,
+          turns: (base.turns ?? []).map((turn, index, items) =>
+            index === items.length - 1 ? { ...turn, tags } : turn,
+          ),
+        };
+      });
+    },
+    [displayedConversations, updateConversation],
+  );
+
+  const toggleImageFavorite = useCallback(
+    async (conversationId: string, turnId: string, imageId: string) => {
+      await updateConversation(conversationId, (current) => {
+        const base = current ?? displayedConversations.find((item) => item.id === conversationId);
+        if (!base) {
+          throw new Error("会话不存在");
+        }
+        return {
+          ...base,
+          turns: (base.turns ?? []).map((turn) =>
+            turn.id === turnId
+              ? {
+                  ...turn,
+                  images: turn.images.map((image) =>
+                    image.id === imageId
+                      ? { ...image, favorite: !image.favorite }
+                      : image,
+                  ),
+                }
+              : turn,
+          ),
+        };
+      });
+    },
+    [displayedConversations, updateConversation],
+  );
+
+  const toggleCompareImage = useCallback(
+    (conversationId: string, turnId: string, image: StoredImage) => {
+      setCompareItems((current) => {
+        const exists = current.some((item) => item.image.id === image.id);
+        if (exists) {
+          return current.filter((item) => item.image.id !== image.id);
+        }
+        return [...current, { conversationId, turnId, image }].slice(-6);
+      });
+    },
+    [],
+  );
+
+  const saveCurrentPromptTemplate = useCallback(async () => {
+    const prompt = imagePrompt.trim();
+    if (!prompt) {
+      toast.warning("先写一段提示词再保存模板");
+      return;
+    }
+    const template = await savePromptTemplate({
+      title: prompt.slice(0, 18),
+      prompt,
+      tags: [],
+    });
+    setPromptTemplates((items) => [template, ...items.filter((item) => item.id !== template.id)]);
+    toast.success("已保存提示词模板");
+  }, [imagePrompt]);
+
+  const saveTurnAsTemplate = useCallback(async (turn: ImageConversationTurn) => {
+    const prompt = turn.prompt.trim();
+    if (!prompt) {
+      toast.warning("这条记录没有可保存的提示词");
+      return;
+    }
+    const template = await savePromptTemplate({
+      title: turn.title || prompt.slice(0, 18),
+      prompt,
+      tags: turn.tags ?? [],
+    });
+    setPromptTemplates((items) => [template, ...items.filter((item) => item.id !== template.id)]);
+    toast.success("已保存提示词模板");
+  }, []);
+
+  const applyPromptTemplate = useCallback((template: PromptTemplate) => {
+    setImagePrompt(template.prompt);
+    textareaRef.current?.focus();
+    toast.success("已套用提示词模板");
+  }, []);
+
+  const removePromptTemplate = useCallback(async (id: string) => {
+    await deletePromptTemplate(id);
+    setPromptTemplates((items) => items.filter((item) => item.id !== id));
+    toast.success("已删除模板");
+  }, []);
+
+  const sendImageToChat = useCallback(
+    async (
+      conversationId: string,
+      turn: ImageConversationTurn,
+      image: StoredImage,
+    ) => {
+      const src = buildImageDataUrl(image);
+      if (!src) {
+        toast.error("当前图片没有可带回对话的数据");
+        return;
+      }
+      try {
+        const dataUrl = await imageSourceToDataUrl(src);
+        const allChats = await listChatConversations();
+        const sourceConversation =
+          displayedConversations.find((item) => item.id === conversationId) ??
+          selectedConversation;
+        const targetChatId =
+          sourceConversation?.sourceChatConversationId || makeId();
+        const existing = allChats.find((item) => item.id === targetChatId);
+        const now = new Date().toISOString();
+        const content = [
+          "请分析这张图片，并帮我继续改写下一轮生图提示词。",
+          turn.prompt ? `原始提示词：${turn.prompt}` : "",
+          image.revised_prompt ? `模型理解：${image.revised_prompt}` : "",
+        ].filter(Boolean).join("\n\n");
+        const nextConversation: ChatConversation = {
+          ...(existing ?? {
+            id: targetChatId,
+            title: `图片回聊 · ${sourceConversation?.title || "新图片"}`,
+            messages: [],
+            createdAt: now,
+            updatedAt: now,
+          }),
+          messages: [
+            ...(existing?.messages ?? []),
+            {
+              id: makeId(),
+              role: "user",
+              content,
+              attachments: [
+                {
+                  id: makeId(),
+                  kind: "image",
+                  name: "image-result.png",
+                  mimeType: "image/png",
+                  size: 0,
+                  dataUrl,
+                },
+              ],
+              createdAt: now,
+              status: "success",
+              linkedImageConversationId: conversationId,
+              linkedImageTurnId: turn.id,
+            },
+          ],
+          updatedAt: now,
+        };
+        await saveChatConversation(nextConversation);
+        toast.success("已带回对话");
+        navigate(`/chat?conversation=${encodeURIComponent(targetChatId)}`);
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "带回对话失败");
+      }
+    },
+    [displayedConversations, navigate, selectedConversation],
   );
 
   const openHistoryView = useCallback(() => {
@@ -1374,6 +1792,17 @@ export default function ImagePage() {
     },
     [focusConversation, openWorkspaceView],
   );
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        CONTEXTUAL_PROMPT_STORAGE_KEY,
+        contextualPromptEnabled ? "1" : "0",
+      );
+    } catch {
+      // Keep the in-memory preference when localStorage is unavailable.
+    }
+  }, [contextualPromptEnabled]);
 
   const applyPromptExample = useCallback(
     (example: (typeof inspirationExamples)[number]) => {
@@ -1400,6 +1829,8 @@ export default function ImagePage() {
       imageResolutionAccess,
       imageQuality,
       selectedConversationId,
+      selectedConversation,
+      contextualPromptEnabled: contextualPromptEnabled && contextualPromptAvailable,
       editorTarget,
       makeId,
       focusConversation,
@@ -1458,7 +1889,7 @@ export default function ImagePage() {
 
   const historyPanel = (
     <HistorySidebar
-      conversations={displayedConversations}
+      conversations={filteredConversations}
       selectedConversationId={selectedConversationId}
       isLoadingHistory={isLoadingHistory}
       hasActiveTasks={hasActiveTasks}
@@ -1470,6 +1901,18 @@ export default function ImagePage() {
       onClearHistory={handleClearHistory}
       onFocusConversation={handleFocusConversationAndOpenWorkspace}
       onDeleteConversation={handleDeleteConversation}
+      searchQuery={historySearchQuery}
+      modeFilter={historyModeFilter}
+      statusFilter={historyStatusFilter}
+      favoriteOnly={historyFavoriteOnly}
+      selectedIds={selectedHistoryIds}
+      onSearchQueryChange={setHistorySearchQuery}
+      onModeFilterChange={setHistoryModeFilter}
+      onStatusFilterChange={setHistoryStatusFilter}
+      onFavoriteOnlyChange={setHistoryFavoriteOnly}
+      onToggleSelected={toggleHistorySelected}
+      onToggleFavorite={toggleConversationFavorite}
+      onExportSelected={exportSelectedConversations}
       standalone={isStandaloneHistory}
     />
   );
@@ -1496,6 +1939,68 @@ export default function ImagePage() {
         onToggleHistory={() => setHistoryCollapsed((current) => !current)}
         showHistoryToggle={!isStandaloneWorkspace}
       />
+      {selectedConversation ? (
+        <div className="border-b border-stone-200/80 bg-white/70 px-4 py-3 dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel)] sm:px-6">
+          <div className="mx-auto flex max-w-[1120px] flex-col gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                className={cn(
+                  "h-9 rounded-full border-stone-200 bg-white px-3 text-xs shadow-none",
+                  selectedConversation.favorite && "border-amber-200 bg-amber-50 text-amber-700",
+                )}
+                onClick={() => void toggleConversationFavorite(selectedConversation.id)}
+              >
+                <Star className={cn("size-4", selectedConversation.favorite && "fill-current")} />
+                {selectedConversation.favorite ? "已收藏" : "收藏会话"}
+              </Button>
+              <Input
+                value={tagDraft}
+                onChange={(event) => setTagDraft(event.target.value)}
+                onBlur={() =>
+                  void updateConversationTags(
+                    selectedConversation.id,
+                    normalizeTagInput(tagDraft),
+                  )
+                }
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.currentTarget.blur();
+                  }
+                }}
+                placeholder="添加标签，用空格或逗号分隔"
+                className="h-9 min-w-[220px] flex-1 rounded-full border-stone-200 bg-white px-4 text-xs shadow-none"
+              />
+              {compareItems.length > 0 ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="h-9 rounded-full px-3 text-xs"
+                  onClick={() => setCompareItems([])}
+                >
+                  清空对比 {compareItems.length}
+                </Button>
+              ) : null}
+              {selectedConversation.sourceChatConversationId ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="h-9 rounded-full px-3 text-xs"
+                  onClick={() =>
+                    navigate(
+                      `/chat?conversation=${encodeURIComponent(selectedConversation.sourceChatConversationId || "")}`,
+                    )
+                  }
+                >
+                  来自对话
+                </Button>
+              ) : null}
+            </div>
+            <VersionMap conversation={selectedConversation} />
+          </div>
+        </div>
+      ) : null}
 
       <div
         className={cn(
@@ -1534,6 +2039,11 @@ export default function ImagePage() {
               onSeedFromResult={seedFromResult}
               onRetryTurn={handleRetryTurn}
               onCancelTurn={handleCancelTurn}
+              onToggleImageFavorite={toggleImageFavorite}
+              onToggleCompareImage={toggleCompareImage}
+              compareImageIds={compareImageIds}
+              onSaveTurnAsTemplate={saveTurnAsTemplate}
+              onSendImageToChat={sendImageToChat}
             />
           )}
         </div>
@@ -1570,8 +2080,11 @@ export default function ImagePage() {
         imageQualityDisabled={!isImageQualityEnabled}
         imageQualityDisabledReason={imageQualityDisabledReason}
         availableQuota={availableQuota}
+        contextualPromptEnabled={contextualPromptEnabled}
+        contextualPromptAvailable={contextualPromptAvailable}
         sourceImages={sourceImages}
         imagePrompt={imagePrompt}
+        promptTemplates={promptTemplates}
         textareaRef={textareaRef}
         uploadInputRef={uploadInputRef}
         maskInputRef={maskInputRef}
@@ -1584,7 +2097,11 @@ export default function ImagePage() {
           setImageResolutionTier(value as ImageResolutionTier)
         }
         onImageQualityChange={(value) => setImageQuality(value as ImageQuality)}
+        onContextualPromptEnabledChange={setContextualPromptEnabled}
         onPromptChange={setImagePrompt}
+        onApplyPromptTemplate={applyPromptTemplate}
+        onSavePromptTemplate={saveCurrentPromptTemplate}
+        onDeletePromptTemplate={removePromptTemplate}
         onPromptPaste={handlePromptPaste}
         onRemoveSourceImage={removeSourceImage}
         onOpenSourceSelectionEditor={openSourceSelectionEditor}
@@ -1642,6 +2159,127 @@ export default function ImagePage() {
           await handleSelectionEditSubmit(payload);
         }}
       />
+      <CompareModal
+        items={compareItems}
+        onClose={() => setCompareItems([])}
+        onRemove={(imageId) =>
+          setCompareItems((items) =>
+            items.filter((item) => item.image.id !== imageId),
+          )
+        }
+      />
     </section>
+  );
+}
+
+function VersionMap({ conversation }: { conversation: ImageConversation }) {
+  const turns = conversation.turns ?? [];
+  if (turns.length <= 1 && !turns.some((turn) => turn.parentTurnId)) {
+    return null;
+  }
+  return (
+    <div className="hide-scrollbar flex items-center gap-2 overflow-x-auto pb-1">
+      <GitBranch className="size-4 shrink-0 text-stone-400" />
+      {turns.map((turn, index) => (
+        <div key={turn.id} className="flex shrink-0 items-center gap-2">
+          {index > 0 ? <span className="text-stone-300">→</span> : null}
+          <span
+            className={cn(
+              "rounded-full px-3 py-1 text-[11px] font-medium",
+              turn.parentTurnId
+                ? "bg-sky-50 text-sky-700"
+                : "bg-stone-100 text-stone-600",
+            )}
+            title={
+              turn.parentTurnId
+                ? `来源：${turn.parentTurnId}${turn.parentImageId ? ` / ${turn.parentImageId}` : ""}`
+                : "起始节点"
+            }
+          >
+            {index + 1}. {turn.mode === "edit" ? "编辑" : "生成"}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CompareModal({
+  items,
+  onClose,
+  onRemove,
+}: {
+  items: Array<{
+    conversationId: string;
+    turnId: string;
+    image: StoredImage;
+  }>;
+  onClose: () => void;
+  onRemove: (imageId: string) => void;
+}) {
+  if (items.length === 0) {
+    return null;
+  }
+  return (
+    <div className="fixed inset-0 z-50 bg-black/45 p-3 backdrop-blur-sm sm:p-6">
+      <div className="flex h-full flex-col overflow-hidden rounded-[28px] bg-[#f8f8f7] shadow-2xl dark:bg-[var(--studio-panel)]">
+        <div className="flex items-center justify-between border-b border-stone-200 px-4 py-3 dark:border-[var(--studio-border)]">
+          <div>
+            <div className="text-sm font-semibold text-stone-950 dark:text-[var(--studio-text-strong)]">
+              图片对比
+            </div>
+            <div className="text-xs text-stone-500 dark:text-[var(--studio-text-muted)]">
+              已选择 {items.length} 张图片
+            </div>
+          </div>
+          <button
+            type="button"
+            className="inline-flex size-10 items-center justify-center rounded-2xl border border-stone-200 bg-white text-stone-600 transition hover:bg-stone-50 dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel-soft)]"
+            onClick={onClose}
+            aria-label="关闭对比"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+        <div className="hide-scrollbar grid flex-1 auto-cols-[minmax(280px,1fr)] grid-flow-col gap-3 overflow-x-auto p-4">
+          {items.map((item) => {
+            const src = buildImageDataUrl(item.image);
+            return (
+              <div
+                key={item.image.id}
+                className="flex min-w-[280px] flex-col overflow-hidden rounded-[22px] border border-stone-200 bg-white dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel-soft)]"
+              >
+                <div className="flex items-center justify-between border-b border-stone-100 px-3 py-2 text-xs text-stone-500 dark:border-[var(--studio-border)]">
+                  <span className="truncate">{item.turnId}</span>
+                  <button
+                    type="button"
+                    className="rounded-xl p-1 text-stone-400 transition hover:bg-stone-100 hover:text-rose-500"
+                    onClick={() => onRemove(item.image.id)}
+                    aria-label="移出对比"
+                  >
+                    <X className="size-4" />
+                  </button>
+                </div>
+                <div className="flex min-h-0 flex-1 items-center justify-center bg-stone-50 dark:bg-black">
+                  {src ? (
+                    <Image
+                      src={src}
+                      alt="Compare image"
+                      className="max-h-full max-w-full object-contain"
+                      unoptimized
+                    />
+                  ) : (
+                    <div className="p-6 text-sm text-stone-400">图片不可预览</div>
+                  )}
+                </div>
+                <div className="min-h-[88px] border-t border-stone-100 p-3 text-xs leading-5 text-stone-500 dark:border-[var(--studio-border)]">
+                  {item.image.revised_prompt || "无 revised prompt"}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
   );
 }

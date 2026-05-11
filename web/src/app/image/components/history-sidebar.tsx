@@ -1,10 +1,19 @@
 "use client";
 
 import { memo } from "react";
-import { History, LoaderCircle, MessageSquarePlus, Trash2 } from "lucide-react";
+import { Download, History, LoaderCircle, MessageSquarePlus, Search, Star, Trash2 } from "lucide-react";
 
 import { AppImage as Image } from "@/components/app-image";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { ImageConversation, ImageMode } from "@/store/image-conversations";
 import { cn } from "@/lib/utils";
 
@@ -21,6 +30,18 @@ type HistorySidebarProps = {
   onClearHistory: () => Promise<void>;
   onFocusConversation: (id: string) => void;
   onDeleteConversation: (id: string) => Promise<void>;
+  searchQuery: string;
+  modeFilter: "all" | ImageMode;
+  statusFilter: "all" | "success" | "error" | "running";
+  favoriteOnly: boolean;
+  selectedIds: Set<string>;
+  onSearchQueryChange: (value: string) => void;
+  onModeFilterChange: (value: "all" | ImageMode) => void;
+  onStatusFilterChange: (value: "all" | "success" | "error" | "running") => void;
+  onFavoriteOnlyChange: (value: boolean) => void;
+  onToggleSelected: (id: string, value: boolean) => void;
+  onToggleFavorite: (id: string) => Promise<void>;
+  onExportSelected: () => void;
   standalone?: boolean;
 };
 
@@ -53,6 +74,18 @@ export const HistorySidebar = memo(
     onClearHistory,
     onFocusConversation,
     onDeleteConversation,
+    searchQuery,
+    modeFilter,
+    statusFilter,
+    favoriteOnly,
+    selectedIds,
+    onSearchQueryChange,
+    onModeFilterChange,
+    onStatusFilterChange,
+    onFavoriteOnlyChange,
+    onToggleSelected,
+    onToggleFavorite,
+    onExportSelected,
     standalone = false,
   }: HistorySidebarProps) {
     return (
@@ -95,6 +128,57 @@ export const HistorySidebar = memo(
               >
                 <Trash2 className="size-4" />
               </Button>
+              <Button
+                variant="outline"
+                className="h-11 rounded-2xl border-stone-200 bg-white px-3 text-stone-600 hover:bg-stone-50 dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel-soft)] dark:text-[var(--studio-text)]"
+                onClick={onExportSelected}
+                disabled={conversations.length === 0}
+                title="导出选中或当前筛选结果"
+              >
+                <Download className="size-4" />
+              </Button>
+            </div>
+            <div className="mt-3 space-y-2">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-stone-400" />
+                <Input
+                  value={searchQuery}
+                  onChange={(event) => onSearchQueryChange(event.target.value)}
+                  placeholder="搜索提示词、标题、标签"
+                  className="h-10 rounded-2xl border-stone-200 bg-white pl-9 text-sm shadow-none dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel-soft)]"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <Select value={modeFilter} onValueChange={(value) => onModeFilterChange(value as "all" | ImageMode)}>
+                  <SelectTrigger className="h-9 rounded-2xl border-stone-200 bg-white text-xs shadow-none dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel-soft)]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">全部模式</SelectItem>
+                    <SelectItem value="generate">生成</SelectItem>
+                    <SelectItem value="edit">编辑</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select value={statusFilter} onValueChange={(value) => onStatusFilterChange(value as "all" | "success" | "error" | "running")}>
+                  <SelectTrigger className="h-9 rounded-2xl border-stone-200 bg-white text-xs shadow-none dark:border-[var(--studio-border)] dark:bg-[var(--studio-panel-soft)]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">全部状态</SelectItem>
+                    <SelectItem value="success">成功</SelectItem>
+                    <SelectItem value="error">失败</SelectItem>
+                    <SelectItem value="running">处理中</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <label className="flex cursor-pointer items-center gap-2 rounded-2xl bg-white px-3 py-2 text-xs font-medium text-stone-600 dark:bg-[var(--studio-panel-soft)] dark:text-[var(--studio-text)]">
+                <Checkbox
+                  checked={favoriteOnly}
+                  onCheckedChange={(value) => onFavoriteOnlyChange(Boolean(value))}
+                  className="size-4 rounded-md"
+                />
+                只看收藏
+              </label>
             </div>
           </div>
 
@@ -133,6 +217,14 @@ export const HistorySidebar = memo(
                           onClick={() => onFocusConversation(conversation.id)}
                           className="flex min-w-0 flex-1 items-center gap-3 text-left"
                         >
+                          <Checkbox
+                            checked={selectedIds.has(conversation.id)}
+                            onCheckedChange={(value) =>
+                              onToggleSelected(conversation.id, Boolean(value))
+                            }
+                            className="size-4 shrink-0 rounded-md"
+                            onClick={(event) => event.stopPropagation()}
+                          />
                           <div className="flex size-14 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-stone-100">
                             {previewSrc ? (
                               <Image
@@ -162,7 +254,30 @@ export const HistorySidebar = memo(
                             <div className="mt-1 line-clamp-2 text-xs leading-5 text-stone-500">
                               {conversation.prompt || "无额外提示词"}
                             </div>
+                            {conversation.tags?.length ? (
+                              <div className="mt-2 flex flex-wrap gap-1">
+                                {conversation.tags.slice(0, 3).map((tag) => (
+                                  <span key={tag} className="rounded-full bg-stone-100 px-2 py-0.5 text-[10px] text-stone-500">
+                                    #{tag}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
                           </div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void onToggleFavorite(conversation.id)}
+                          className={cn(
+                            "inline-flex size-8 shrink-0 items-center justify-center rounded-xl transition hover:bg-stone-100",
+                            conversation.favorite
+                              ? "text-amber-500"
+                              : "text-stone-400 hover:text-amber-500",
+                          )}
+                          aria-label={conversation.favorite ? "取消收藏" : "收藏会话"}
+                          title={conversation.favorite ? "取消收藏" : "收藏会话"}
+                        >
+                          <Star className={cn("size-4", conversation.favorite && "fill-current")} />
                         </button>
                         <button
                           type="button"
@@ -209,6 +324,18 @@ export const HistorySidebar = memo(
       prev.onClearHistory === next.onClearHistory &&
       prev.onFocusConversation === next.onFocusConversation &&
       prev.onDeleteConversation === next.onDeleteConversation &&
+      prev.searchQuery === next.searchQuery &&
+      prev.modeFilter === next.modeFilter &&
+      prev.statusFilter === next.statusFilter &&
+      prev.favoriteOnly === next.favoriteOnly &&
+      hasSameConversationIdSet(prev.selectedIds, next.selectedIds) &&
+      prev.onSearchQueryChange === next.onSearchQueryChange &&
+      prev.onModeFilterChange === next.onModeFilterChange &&
+      prev.onStatusFilterChange === next.onStatusFilterChange &&
+      prev.onFavoriteOnlyChange === next.onFavoriteOnlyChange &&
+      prev.onToggleSelected === next.onToggleSelected &&
+      prev.onToggleFavorite === next.onToggleFavorite &&
+      prev.onExportSelected === next.onExportSelected &&
       prev.standalone === next.standalone
     );
   },

@@ -45,6 +45,10 @@ export function createConversationTurn(payload: {
   scale?: string;
   sourceImages?: StoredSourceImage[];
   sourceReference?: InpaintSourceReference;
+  parentTurnId?: string;
+  parentImageId?: string;
+  sourceChatConversationId?: string;
+  sourceChatMessageId?: string;
   images: StoredImage[];
   createdAt: string;
   status: "queued" | "running" | "generating" | "success" | "error" | "cancelled";
@@ -63,6 +67,10 @@ export function createConversationTurn(payload: {
     scale: payload.scale,
     sourceImages: payload.sourceImages ?? [],
     sourceReference: payload.sourceReference,
+    parentTurnId: payload.parentTurnId,
+    parentImageId: payload.parentImageId,
+    sourceChatConversationId: payload.sourceChatConversationId,
+    sourceChatMessageId: payload.sourceChatMessageId,
     images: payload.images,
     createdAt: payload.createdAt,
     status: payload.status,

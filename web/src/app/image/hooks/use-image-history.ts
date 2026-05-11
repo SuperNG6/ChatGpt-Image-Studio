@@ -156,11 +156,14 @@ export function useImageHistory({
 
   const handleCreateDraft = useCallback(
     (
-      resetComposer: (nextMode?: "generate" | "edit") => void,
+      resetComposer: (
+        nextMode?: "generate" | "edit",
+        options?: { resetCount?: boolean },
+      ) => void,
       textareaRef: React.RefObject<HTMLTextAreaElement | null>,
     ) => {
       openDraftConversation();
-      resetComposer("generate");
+      resetComposer("generate", { resetCount: true });
       textareaRef.current?.focus();
     },
     [openDraftConversation],

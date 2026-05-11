@@ -46,6 +46,12 @@ type Image struct {
 	ParentMessageID string `json:"parent_message_id,omitempty"`
 	SourceAccountID string `json:"source_account_id,omitempty"`
 	Error           string `json:"error,omitempty"`
+	Favorite        bool     `json:"favorite,omitempty"`
+	Tags            []string `json:"tags,omitempty"`
+	ParentTurnID    string   `json:"parentTurnId,omitempty"`
+	ParentImageID   string   `json:"parentImageId,omitempty"`
+	SourceChatConversationID string `json:"sourceChatConversationId,omitempty"`
+	SourceChatMessageID      string `json:"sourceChatMessageId,omitempty"`
 }
 
 type Turn struct {
@@ -63,6 +69,12 @@ type Turn struct {
 	CreatedAt    string        `json:"createdAt"`
 	Status       string        `json:"status"`
 	Error        string        `json:"error,omitempty"`
+	Favorite     bool          `json:"favorite,omitempty"`
+	Tags         []string      `json:"tags,omitempty"`
+	ParentTurnID  string        `json:"parentTurnId,omitempty"`
+	ParentImageID string        `json:"parentImageId,omitempty"`
+	SourceChatConversationID string `json:"sourceChatConversationId,omitempty"`
+	SourceChatMessageID      string `json:"sourceChatMessageId,omitempty"`
 }
 
 type Conversation struct {
@@ -80,6 +92,10 @@ type Conversation struct {
 	CreatedAt    string        `json:"createdAt"`
 	Status       string        `json:"status"`
 	Error        string        `json:"error,omitempty"`
+	Favorite     bool          `json:"favorite,omitempty"`
+	Tags         []string      `json:"tags,omitempty"`
+	SourceChatConversationID string `json:"sourceChatConversationId,omitempty"`
+	SourceChatMessageID      string `json:"sourceChatMessageId,omitempty"`
 	Turns        []Turn        `json:"turns,omitempty"`
 }
 

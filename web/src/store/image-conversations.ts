@@ -34,6 +34,10 @@ export type StoredImage = {
   parent_message_id?: string;
   source_account_id?: string;
   error?: string;
+  favorite?: boolean;
+  tags?: string[];
+  parentTurnId?: string;
+  parentImageId?: string;
 };
 
 export type ImageConversationStatus =
@@ -62,6 +66,12 @@ export type ImageConversationTurn = {
   status: ImageConversationStatus;
   error?: string;
   taskId?: string;
+  favorite?: boolean;
+  tags?: string[];
+  parentTurnId?: string;
+  parentImageId?: string;
+  sourceChatConversationId?: string;
+  sourceChatMessageId?: string;
   queuePosition?: number;
   waitingReason?: string;
   waitingDetail?: string;
@@ -87,6 +97,10 @@ export type ImageConversation = {
   createdAt: string;
   status: ImageConversationStatus;
   error?: string;
+  favorite?: boolean;
+  tags?: string[];
+  sourceChatConversationId?: string;
+  sourceChatMessageId?: string;
   turns?: ImageConversationTurn[];
 };
 
@@ -291,17 +305,34 @@ async function materializeConversationImagesForBrowser(
 }
 
 function normalizeStoredImage(image: StoredImage): StoredImage {
+  const normalized = {
+    ...image,
+    tags: normalizeTags(image.tags),
+  };
   if (
     image.status === "loading" ||
     image.status === "error" ||
     image.status === "success"
   ) {
-    return image;
+    return normalized;
   }
   return {
-    ...image,
+    ...normalized,
     status: image.b64_json || image.url ? "success" : "loading",
   };
+}
+
+function normalizeTags(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return Array.from(
+    new Set(
+      value
+        .map((item) => String(item || "").trim())
+        .filter(Boolean),
+    ),
+  ).slice(0, 24);
 }
 
 function normalizeImageQuality(
@@ -332,6 +363,8 @@ function normalizeTurn(turn: ImageConversationTurn): ImageConversationTurn {
     sourceImages: Array.isArray(turn.sourceImages) ? turn.sourceImages : [],
     sourceReference: normalizeSourceReference(turn.sourceReference),
     images: (turn.images || []).map(normalizeStoredImage),
+    tags: normalizeTags(turn.tags),
+    favorite: Boolean(turn.favorite),
     status:
       turn.status === "queued" ||
       turn.status === "running" ||
@@ -410,6 +443,12 @@ export function normalizeConversation(
     createdAt: latestTurn.createdAt,
     status: latestTurn.status,
     error: latestTurn.error,
+    favorite: Boolean(conversation.favorite || latestTurn.favorite),
+    tags: normalizeTags([...normalizeTags(conversation.tags), ...normalizeTags(latestTurn.tags)]),
+    sourceChatConversationId:
+      latestTurn.sourceChatConversationId || conversation.sourceChatConversationId,
+    sourceChatMessageId:
+      latestTurn.sourceChatMessageId || conversation.sourceChatMessageId,
     turns,
   };
 }

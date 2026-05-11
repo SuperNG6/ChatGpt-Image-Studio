@@ -97,6 +97,21 @@ export type ImageTaskStreamEvent = {
   snapshot?: ImageTaskSnapshot;
 };
 
+export type ChatMessageAttachmentPayload = {
+  kind: "image" | "document";
+  name: string;
+  mimeType: string;
+  dataUrl?: string;
+  text?: string;
+};
+
+export type ChatMessageResponse = {
+  message: string;
+  conversationId?: string;
+  parentMessageId?: string;
+  sourceAccountId?: string;
+};
+
 export type InpaintSourceReference = {
   original_file_id: string;
   original_gen_id: string;
@@ -796,6 +811,26 @@ export async function runSync(
       body: { direction, source },
     },
   );
+}
+
+export async function sendChatMessage(payload: {
+  message: string;
+  model?: string;
+  conversationId?: string;
+  parentMessageId?: string;
+  attachments?: ChatMessageAttachmentPayload[];
+}) {
+  return httpRequest<ChatMessageResponse>("/api/chat/messages", {
+    method: "POST",
+    body: {
+      message: payload.message,
+      model: payload.model,
+      conversationId: payload.conversationId,
+      parentMessageId: payload.parentMessageId,
+      attachments: payload.attachments ?? [],
+    },
+    timeoutMs: 10 * 60 * 1000,
+  });
 }
 
 export async function generateImage(

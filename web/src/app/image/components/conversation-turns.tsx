@@ -8,8 +8,11 @@ import {
   Copy,
   Download,
   LoaderCircle,
+  MessageSquareText,
   RotateCcw,
   Sparkles,
+  Star,
+  Columns3,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -141,6 +144,23 @@ type ConversationTurnsProps = {
     conversationId: string,
     turn: ImageConversationTurn,
   ) => Promise<void>;
+  onToggleImageFavorite: (
+    conversationId: string,
+    turnId: string,
+    imageId: string,
+  ) => Promise<void>;
+  onToggleCompareImage: (
+    conversationId: string,
+    turnId: string,
+    image: StoredImage,
+  ) => void;
+  compareImageIds: Set<string>;
+  onSaveTurnAsTemplate: (turn: ImageConversationTurn) => Promise<void>;
+  onSendImageToChat: (
+    conversationId: string,
+    turn: ImageConversationTurn,
+    image: StoredImage,
+  ) => Promise<void>;
 };
 
 export const ConversationTurns = memo(function ConversationTurns({
@@ -159,6 +179,11 @@ export const ConversationTurns = memo(function ConversationTurns({
   onSeedFromResult,
   onRetryTurn,
   onCancelTurn,
+  onToggleImageFavorite,
+  onToggleCompareImage,
+  compareImageIds,
+  onSaveTurnAsTemplate,
+  onSendImageToChat,
 }: ConversationTurnsProps) {
   return (
     <div className="mx-auto flex w-full max-w-[1120px] flex-col gap-8 px-4 pt-0 pb-8 sm:px-6 sm:py-8">
@@ -253,6 +278,16 @@ export const ConversationTurns = memo(function ConversationTurns({
                   >
                     <Copy className="size-3.5" />
                     复制
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void onSaveTurnAsTemplate(turn)}
+                    className="inline-flex h-7 shrink-0 items-center gap-1 rounded-full border border-stone-200 bg-white px-2.5 text-xs font-medium text-stone-500 opacity-0 shadow-sm transition hover:bg-stone-100 hover:text-stone-900 focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
+                    title="保存为提示词模板"
+                    aria-label="保存为提示词模板"
+                  >
+                    <Sparkles className="size-3.5" />
+                    模板
                   </button>
                 </div>
               </div>
@@ -391,6 +426,53 @@ export const ConversationTurns = memo(function ConversationTurns({
                                 aria-label="引用"
                               >
                                 <Copy className="size-4" />
+                              </button>
+                              <button
+                                type="button"
+                                className={cn(
+                                  "inline-flex size-9 items-center justify-center rounded-full border border-stone-200 bg-white transition hover:bg-stone-100",
+                                  image.favorite
+                                    ? "text-amber-500"
+                                    : "text-stone-600 hover:text-amber-500",
+                                )}
+                                onClick={() =>
+                                  void onToggleImageFavorite(
+                                    conversationId,
+                                    turn.id,
+                                    image.id,
+                                  )
+                                }
+                                title={image.favorite ? "取消收藏" : "收藏图片"}
+                                aria-label={image.favorite ? "取消收藏" : "收藏图片"}
+                              >
+                                <Star className={cn("size-4", image.favorite && "fill-current")} />
+                              </button>
+                              <button
+                                type="button"
+                                className={cn(
+                                  "inline-flex size-9 items-center justify-center rounded-full border border-stone-200 bg-white transition hover:bg-stone-100",
+                                  compareImageIds.has(image.id)
+                                    ? "text-stone-950 ring-2 ring-stone-950/10"
+                                    : "text-stone-600 hover:text-stone-900",
+                                )}
+                                onClick={() =>
+                                  onToggleCompareImage(conversationId, turn.id, image)
+                                }
+                                title="加入对比"
+                                aria-label="加入对比"
+                              >
+                                <Columns3 className="size-4" />
+                              </button>
+                              <button
+                                type="button"
+                                className="inline-flex size-9 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-600 transition hover:bg-stone-100 hover:text-stone-900"
+                                onClick={() =>
+                                  void onSendImageToChat(conversationId, turn, image)
+                                }
+                                title="带回对话"
+                                aria-label="带回对话"
+                              >
+                                <MessageSquareText className="size-4" />
                               </button>
                               <a
                                 href={imageDataUrl}

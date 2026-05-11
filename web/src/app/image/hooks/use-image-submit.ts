@@ -37,6 +37,8 @@ type UseImageSubmitOptions = {
   imageResolutionAccess: ImageResolutionAccess;
   imageQuality: ImageQuality;
   selectedConversationId: string | null;
+  selectedConversation: ImageConversation | null;
+  contextualPromptEnabled: boolean;
   editorTarget: EditorTarget | null;
   makeId: () => string;
   focusConversation: (conversationId: string) => void;
@@ -49,7 +51,10 @@ type UseImageSubmitOptions = {
     conversationId: string,
     updater: (current: ImageConversation | null) => ImageConversation,
   ) => Promise<void>;
-  resetComposer: (nextMode?: ImageMode) => void;
+  resetComposer: (
+    nextMode?: ImageMode,
+    options?: { resetCount?: boolean },
+  ) => void;
 };
 
 function buildConversationBase(
@@ -106,6 +111,58 @@ function normalizeImageQuality(value: string | undefined, fallback: ImageQuality
   return fallback;
 }
 
+function trimPromptSnippet(value: string | undefined, maxLength: number) {
+  const normalized = String(value || "").replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLength)}...`;
+}
+
+function buildContextualPrompt(
+  prompt: string,
+  conversation: ImageConversation | null,
+  enabled: boolean,
+  excludeTurnId?: string,
+) {
+  if (!enabled || !conversation?.turns?.length) {
+    return prompt;
+  }
+
+  const previousTurns = conversation.turns
+    .filter((turn) => turn.id !== excludeTurnId && turn.prompt?.trim())
+    .slice(-6);
+  if (previousTurns.length === 0) {
+    return prompt;
+  }
+
+  const contextLines = previousTurns.flatMap((turn, index) => {
+    const turnLabel = turn.mode === "edit" ? "编辑" : "生成";
+    const lines = [
+      `${index + 1}. ${turnLabel}意图：${trimPromptSnippet(turn.prompt, 700)}`,
+    ];
+    const revisedPrompts = (turn.images || [])
+      .map((image) => trimPromptSnippet(image.revised_prompt, 420))
+      .filter(Boolean)
+      .slice(0, 2);
+    if (revisedPrompts.length > 0) {
+      lines.push(`   生成结果理解：${revisedPrompts.join("；")}`);
+    }
+    return lines;
+  });
+
+  const context = contextLines.join("\n").slice(0, 5200);
+  return [
+    "请参考以下同一图片会话的历史上下文，理解用户持续迭代的主题、风格、主体、构图偏好和已明确排除的方向。",
+    "历史上下文只用于理解目标，不要机械复述；请以本次请求为最高优先级。",
+    "",
+    context,
+    "",
+    "本次请求：",
+    prompt,
+  ].join("\n");
+}
+
 export function useImageSubmit({
   mode,
   imagePrompt,
@@ -118,6 +175,8 @@ export function useImageSubmit({
   imageResolutionAccess,
   imageQuality,
   selectedConversationId,
+  selectedConversation,
+  contextualPromptEnabled,
   editorTarget,
   makeId,
   focusConversation,
@@ -161,6 +220,11 @@ export function useImageSubmit({
       const targetConversationId =
         editorTarget.conversationId ?? selectedConversationId;
       const conversationId = targetConversationId ?? makeId();
+      const requestPrompt = buildContextualPrompt(
+        prompt,
+        selectedConversation,
+        contextualPromptEnabled,
+      );
       const supportsEditableOutputOptions = true;
       const nextQuality = supportsEditableOutputOptions
         ? normalizeImageQuality(overrideQuality, imageQuality)
@@ -194,6 +258,8 @@ export function useImageSubmit({
           },
         ],
         sourceReference,
+        parentTurnId: editorTarget.turnId,
+        parentImageId: editorTarget.image?.id,
         images: createLoadingImages(1, turnId),
         createdAt: now,
         status: "queued",
@@ -226,7 +292,7 @@ export function useImageSubmit({
           conversationId,
           turnId,
           mode: "edit",
-          prompt,
+          prompt: requestPrompt,
           model: imageModel,
           count: 1,
           size: supportsEditableOutputOptions ? imageSize : undefined,
@@ -280,6 +346,7 @@ export function useImageSubmit({
     },
     [
       closeSelectionEditor,
+      contextualPromptEnabled,
       editorTarget,
       focusConversation,
       imageModel,
@@ -289,6 +356,7 @@ export function useImageSubmit({
       makeId,
       persistConversation,
       selectedConversationId,
+      selectedConversation,
       setImagePrompt,
       setSourceImages,
       setSubmitElapsedSeconds,
@@ -357,6 +425,8 @@ export function useImageSubmit({
         quality: turnQuality,
         sourceImages: turnSourceImages,
         sourceReference: turn.sourceReference,
+        parentTurnId: turn.parentTurnId,
+        parentImageId: turn.parentImageId,
         images: nextImages,
         createdAt: new Date().toISOString(),
         status: isSingleImageRetry ? "running" : "queued",
@@ -475,6 +545,11 @@ export function useImageSubmit({
 
     const conversationId = selectedConversationId ?? makeId();
     const turnId = makeId();
+    const requestPrompt = buildContextualPrompt(
+      prompt,
+      selectedConversation,
+      contextualPromptEnabled,
+    );
       const expectedCount =
       mode === "generate" ? parsedCount : 1;
     const draftTurn = createConversationTurn({
@@ -514,7 +589,7 @@ export function useImageSubmit({
         conversationId,
         turnId,
         mode,
-        prompt,
+        prompt: requestPrompt,
         model: imageModel,
         count: expectedCount,
         size: imageSize,
@@ -565,6 +640,7 @@ export function useImageSubmit({
     }
   }, [
     focusConversation,
+    contextualPromptEnabled,
     imageModel,
     imagePrompt,
     imageSources,
@@ -577,6 +653,7 @@ export function useImageSubmit({
     persistConversation,
     resetComposer,
     selectedConversationId,
+    selectedConversation,
     setImagePrompt,
     setSourceImages,
     setSubmitElapsedSeconds,
