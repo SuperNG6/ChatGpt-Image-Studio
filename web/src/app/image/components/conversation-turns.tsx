@@ -1,7 +1,6 @@
 "use client";
 
-import { memo } from "react";
-import Zoom from "react-medium-image-zoom";
+import { memo, useState } from "react";
 import {
   Brush,
   Clock3,
@@ -10,6 +9,7 @@ import {
   LoaderCircle,
   MessageSquareText,
   RotateCcw,
+  Scissors,
   Sparkles,
   Star,
   Columns3,
@@ -32,6 +32,8 @@ import {
   buildImageDataUrl,
   buildSourceImageUrl,
 } from "../view-utils";
+import { ImageGridSplitterPanel } from "./image-grid-splitter-panel";
+import { ImagePreviewOverlay } from "./image-preview-overlay";
 
 type ActiveRequestState = {
   conversationId: string;
@@ -44,6 +46,13 @@ type ActiveRequestState = {
 type ProcessingStatus = {
   title: string;
   detail: string;
+};
+
+type PreviewImageState = {
+  imageId: string;
+  imageSrc: string;
+  imageName: string;
+  alt: string;
 };
 
 function formatWaitingReason(reason?: string) {
@@ -185,9 +194,29 @@ export const ConversationTurns = memo(function ConversationTurns({
   onSaveTurnAsTemplate,
   onSendImageToChat,
 }: ConversationTurnsProps) {
+  const [expandedSplitterIds, setExpandedSplitterIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [previewImage, setPreviewImage] = useState<PreviewImageState | null>(
+    null,
+  );
+
+  const toggleSplitter = (imageId: string) => {
+    setExpandedSplitterIds((current) => {
+      const next = new Set(current);
+      if (next.has(imageId)) {
+        next.delete(imageId);
+      } else {
+        next.add(imageId);
+      }
+      return next;
+    });
+  };
+
   return (
-    <div className="mx-auto flex w-full max-w-[1120px] flex-col gap-8 px-4 pt-0 pb-8 sm:px-6 sm:py-8">
-      {turns.map((turn) => {
+    <>
+      <div className="mx-auto flex w-full max-w-[1120px] flex-col gap-8 px-4 pt-0 pb-8 sm:px-6 sm:py-8">
+        {turns.map((turn) => {
         const turnProcessing = Boolean(
           activeRequest &&
           activeRequest.conversationId === conversationId &&
@@ -249,16 +278,29 @@ export const ConversationTurns = memo(function ConversationTurns({
                         <div className="border-b border-stone-100 px-3 py-2 text-left text-[11px] font-medium text-stone-500">
                           {buildConversationSourceLabel(source)}
                         </div>
-                        <Zoom>
+                        <button
+                          type="button"
+                          className="block w-full cursor-zoom-in"
+                          onClick={() =>
+                            setPreviewImage({
+                              imageId: source.id,
+                              imageSrc: buildSourceImageUrl(source),
+                              imageName: source.name || "source-image.png",
+                              alt: source.name,
+                            })
+                          }
+                          aria-label="打开来源图片预览"
+                          title="打开图片预览"
+                        >
                           <Image
                             src={buildSourceImageUrl(source)}
                             alt={source.name}
                             width={220}
                             height={160}
                             unoptimized
-                            className="block h-24 w-full cursor-zoom-in bg-stone-50 object-contain"
+                            className="block h-24 w-full bg-stone-50 object-contain"
                           />
-                        </Zoom>
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -385,16 +427,29 @@ export const ConversationTurns = memo(function ConversationTurns({
                       >
                         {image.status === "success" && imageDataUrl ? (
                           <div>
-                            <Zoom>
+                            <button
+                              type="button"
+                              className="block cursor-zoom-in"
+                              onClick={() =>
+                                setPreviewImage({
+                                  imageId: image.id,
+                                  imageSrc: imageDataUrl,
+                                  imageName: downloadName,
+                                  alt: `Generated result ${index + 1}`,
+                                })
+                              }
+                              aria-label="打开图片预览"
+                              title="打开图片预览"
+                            >
                               <Image
                                 src={imageDataUrl}
                                 alt={`Generated result ${index + 1}`}
                                 width={1024}
                                 height={1024}
                                 unoptimized
-                                className="block h-auto max-h-[270px] w-auto max-w-full cursor-zoom-in"
+                                className="block h-auto max-h-[270px] w-auto max-w-full"
                               />
-                            </Zoom>
+                            </button>
                             <div className="flex flex-wrap items-center gap-2 border-t border-stone-100 px-4 py-3">
                               <button
                                 type="button"
@@ -474,6 +529,20 @@ export const ConversationTurns = memo(function ConversationTurns({
                               >
                                 <MessageSquareText className="size-4" />
                               </button>
+                              <button
+                                type="button"
+                                className={cn(
+                                  "inline-flex size-9 items-center justify-center rounded-full border border-stone-200 bg-white transition hover:bg-stone-100",
+                                  expandedSplitterIds.has(image.id)
+                                    ? "text-stone-950 ring-2 ring-stone-950/10"
+                                    : "text-stone-600 hover:text-stone-900",
+                                )}
+                                onClick={() => toggleSplitter(image.id)}
+                                title="切分"
+                                aria-label="切分"
+                              >
+                                <Scissors className="size-4" />
+                              </button>
                               <a
                                 href={imageDataUrl}
                                 download={downloadName}
@@ -484,6 +553,15 @@ export const ConversationTurns = memo(function ConversationTurns({
                                 <Download className="size-4" />
                               </a>
                             </div>
+                            {expandedSplitterIds.has(image.id) ? (
+                              <ImageGridSplitterPanel
+                                imageId={image.id}
+                                imageSrc={imageDataUrl}
+                                imageName={downloadName}
+                                compact
+                                onClose={() => toggleSplitter(image.id)}
+                              />
+                            ) : null}
                           </div>
                         ) : image.status === "error" ? (
                           <div className="flex min-h-[320px] flex-col">
@@ -555,8 +633,17 @@ export const ConversationTurns = memo(function ConversationTurns({
             </div>
           </div>
         );
-      })}
-    </div>
+        })}
+      </div>
+      <ImagePreviewOverlay
+        open={Boolean(previewImage)}
+        imageId={previewImage?.imageId || ""}
+        imageSrc={previewImage?.imageSrc || ""}
+        imageName={previewImage?.imageName || ""}
+        alt={previewImage?.alt || "Generated result"}
+        onClose={() => setPreviewImage(null)}
+      />
+    </>
   );
 });
 
