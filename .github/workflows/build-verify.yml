@@ -8,6 +8,9 @@ on:
       - master
   pull_request:
 
+env:
+  IMAGE_NAME: ghcr.io/superng6/image2
+
 jobs:
   release-package-verify:
     runs-on: ubuntu-latest
@@ -106,7 +109,7 @@ jobs:
           file: ./Dockerfile
           load: true
           platforms: linux/amd64
-          tags: chatgpt-image-studio:verify-amd64
+          tags: ${{ env.IMAGE_NAME }}:verify-amd64
           build-args: |
             VERSION=build-verify
             COMMIT=${{ github.sha }}
@@ -115,7 +118,7 @@ jobs:
       - name: Smoke test amd64 image contents
         run: |
           set -euo pipefail
-          docker run --rm --entrypoint /bin/sh chatgpt-image-studio:verify-amd64 -c \
+          docker run --rm --entrypoint /bin/sh "${IMAGE_NAME}:verify-amd64" -c \
             'uname -m && \
              test -x /app/chatgpt2api-studio && \
              test -f /app/data/config.example.toml && \

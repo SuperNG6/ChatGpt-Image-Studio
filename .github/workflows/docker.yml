@@ -9,6 +9,9 @@ on:
       - "v*.*.*"
   workflow_dispatch:
 
+env:
+  IMAGE_NAME: ghcr.io/superng6/image2
+
 jobs:
   docker:
     runs-on: ubuntu-latest
@@ -37,7 +40,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/peiyizhi0724/chatgpt-image-studio
+          images: ${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
